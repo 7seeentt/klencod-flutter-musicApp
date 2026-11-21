@@ -4,6 +4,13 @@ import 'package:just_audio/just_audio.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
 import 'core.dart';
 
+const sheetShape = RoundedRectangleBorder(
+  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+);
+
+void toast(BuildContext c, String m) => ScaffoldMessenger.of(c)
+    .showSnackBar(SnackBar(content: Text(m), duration: const Duration(seconds: 2)));
+
 // ---------- غلاف الأغنية ----------
 class Art extends StatelessWidget {
   final int id;
@@ -14,6 +21,7 @@ class Art extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final r = BorderRadius.circular(radius);
+    final a = context.accent;
     return QueryArtworkWidget(
       id: id,
       type: ArtworkType.AUDIO,
@@ -27,14 +35,13 @@ class Art extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(
           borderRadius: r,
-          gradient: const LinearGradient(
-            colors: [Color(0xFF8B5CF6), Color(0xFF3B2A7A)],
+          gradient: LinearGradient(
+            colors: [a, Color.lerp(a, Colors.black, 0.5)!],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
         ),
-        child: Icon(Icons.music_note_rounded,
-            color: Colors.white70, size: size * 0.45),
+        child: Icon(Icons.music_note_rounded, color: Colors.white70, size: size * 0.45),
       ),
     );
   }
@@ -49,10 +56,8 @@ class EqBars extends StatefulWidget {
 }
 
 class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat();
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat();
 
   @override
   void dispose() {
@@ -62,6 +67,7 @@ class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final a = context.accent;
     return SizedBox(
       height: 22,
       child: AnimatedBuilder(
@@ -77,10 +83,7 @@ class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
               width: 4,
               height: h,
               margin: const EdgeInsets.symmetric(horizontal: 1.5),
-              decoration: BoxDecoration(
-                color: accent,
-                borderRadius: BorderRadius.circular(2),
-              ),
+              decoration: BoxDecoration(color: a, borderRadius: BorderRadius.circular(2)),
             );
           }),
         ),
@@ -102,8 +105,7 @@ class PlayPauseButton extends StatelessWidget {
         final st = snap.data;
         final playing = st?.playing ?? false;
         final proc = st?.processingState;
-        if (proc == ProcessingState.loading ||
-            proc == ProcessingState.buffering) {
+        if (proc == ProcessingState.loading || proc == ProcessingState.buffering) {
           return SizedBox(
             width: size,
             height: size,
@@ -163,10 +165,7 @@ class SongTile extends StatelessWidget {
       curve: Curves.easeOutCubic,
       builder: (context, v, child) => Opacity(
         opacity: v,
-        child: Transform.translate(
-          offset: Offset(0, 24 * (1 - v)),
-          child: child,
-        ),
+        child: Transform.translate(offset: Offset(0, 24 * (1 - v)), child: child),
       ),
       child: ListenableBuilder(
         listenable: userLib,
@@ -174,8 +173,7 @@ class SongTile extends StatelessWidget {
           stream: player.currentIndexStream,
           builder: (context, snap) {
             final i = snap.data;
-            final current =
-                i != null && i < queue.length && queue[i].id == song.id;
+            final current = i != null && i < queue.length && queue[i].id == song.id;
             return ListTile(
               onTap: onTap,
               contentPadding: const EdgeInsets.only(left: 20, right: 4),
@@ -186,7 +184,7 @@ class SongTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
-                  color: current ? accent : null,
+                  color: current ? context.accent : null,
                 ),
               ),
               subtitle: Text(
@@ -199,9 +197,9 @@ class SongTile extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (userLib.isFav(song.id))
-                    const Padding(
-                      padding: EdgeInsets.only(right: 4),
-                      child: Icon(Icons.favorite, size: 16, color: accent),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Icon(Icons.favorite, size: 16, color: context.accent),
                     ),
                   if (current)
                     StreamBuilder<bool>(
@@ -210,8 +208,7 @@ class SongTile extends StatelessWidget {
                     ),
                   IconButton(
                     icon: const Icon(Icons.more_vert, color: Colors.white54),
-                    onPressed: () =>
-                        showSongMenu(context, song, playlist: playlist),
+                    onPressed: () => showSongMenu(context, song, playlist: playlist),
                   ),
                 ],
               ),
@@ -224,16 +221,12 @@ class SongTile extends StatelessWidget {
 }
 
 // ---------- قوائم ونوافذ ----------
-const _sheetShape = RoundedRectangleBorder(
-  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-);
-
 Future<String?> askName(BuildContext context, String title) {
   final c = TextEditingController();
   return showDialog<String>(
     context: context,
     builder: (ctx) => AlertDialog(
-      backgroundColor: cardColor,
+      backgroundColor: context.card,
       title: Text(title),
       content: TextField(
         controller: c,
@@ -241,14 +234,8 @@ Future<String?> askName(BuildContext context, String title) {
         decoration: const InputDecoration(hintText: 'اسم القائمة'),
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('إلغاء'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, c.text.trim()),
-          child: const Text('حفظ'),
-        ),
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('حفظ')),
       ],
     ),
   );
@@ -257,49 +244,68 @@ Future<String?> askName(BuildContext context, String title) {
 void showSongMenu(BuildContext context, SongModel song, {String? playlist}) {
   showModalBottomSheet(
     context: context,
-    backgroundColor: cardColor,
-    shape: _sheetShape,
+    backgroundColor: context.card,
+    shape: sheetShape,
+    isScrollControlled: true,
     builder: (ctx) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: Art(id: song.id, size: 48, radius: 10),
-            title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(artistOf(song)),
-          ),
-          const Divider(height: 1),
-          ListTile(
-            leading: Icon(
-              userLib.isFav(song.id) ? Icons.favorite : Icons.favorite_border,
-              color: accent,
-            ),
-            title: Text(userLib.isFav(song.id)
-                ? 'إزالة من المفضلة'
-                : 'إضافة للمفضلة'),
-            onTap: () {
-              userLib.toggleFav(song.id);
-              Navigator.pop(ctx);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.playlist_add),
-            title: const Text('إضافة إلى قائمة تشغيل'),
-            onTap: () {
-              Navigator.pop(ctx);
-              pickPlaylist(context, song);
-            },
-          ),
-          if (playlist != null)
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
             ListTile(
-              leading: const Icon(Icons.remove_circle_outline),
-              title: const Text('إزالة من هذه القائمة'),
+              leading: Art(id: song.id, size: 48, radius: 10),
+              title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(artistOf(song)),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(
+                userLib.isFav(song.id) ? Icons.favorite : Icons.favorite_border,
+                color: context.accent,
+              ),
+              title: Text(userLib.isFav(song.id) ? 'إزالة من المفضلة' : 'إضافة للمفضلة'),
               onTap: () {
-                userLib.removeFromPlaylist(playlist, song.id);
+                userLib.toggleFav(song.id);
                 Navigator.pop(ctx);
               },
             ),
-        ],
+            ListTile(
+              leading: const Icon(Icons.playlist_play),
+              title: const Text('تشغيل بعد الأغنية الحالية'),
+              onTap: () {
+                playNext(song);
+                Navigator.pop(ctx);
+                toast(context, 'تمت الإضافة');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.queue),
+              title: const Text('إضافة لقائمة الانتظار'),
+              onTap: () {
+                addToQueue(song);
+                Navigator.pop(ctx);
+                toast(context, 'تمت الإضافة للانتظار');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('إضافة إلى قائمة تشغيل'),
+              onTap: () {
+                Navigator.pop(ctx);
+                pickPlaylist(context, song);
+              },
+            ),
+            if (playlist != null)
+              ListTile(
+                leading: const Icon(Icons.remove_circle_outline),
+                title: const Text('إزالة من هذه القائمة'),
+                onTap: () {
+                  userLib.removeFromPlaylist(playlist, song.id);
+                  Navigator.pop(ctx);
+                },
+              ),
+          ],
+        ),
       ),
     ),
   );
@@ -308,8 +314,8 @@ void showSongMenu(BuildContext context, SongModel song, {String? playlist}) {
 void pickPlaylist(BuildContext context, SongModel song) {
   showModalBottomSheet(
     context: context,
-    backgroundColor: cardColor,
-    shape: _sheetShape,
+    backgroundColor: context.card,
+    shape: sheetShape,
     isScrollControlled: true,
     builder: (ctx) => SafeArea(
       child: ListenableBuilder(
@@ -319,7 +325,7 @@ void pickPlaylist(BuildContext context, SongModel song) {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.add, color: accent),
+                leading: Icon(Icons.add, color: context.accent),
                 title: const Text('قائمة جديدة'),
                 onTap: () async {
                   Navigator.pop(ctx);

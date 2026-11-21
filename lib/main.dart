@@ -6,6 +6,7 @@ import 'package:on_audio_query_forked/on_audio_query.dart';
 import 'core.dart';
 import 'widgets.dart';
 import 'player_ui.dart';
+import 'settings_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,8 +15,10 @@ Future<void> main() async {
     androidNotificationChannelName: 'تشغيل الموسيقى',
     androidNotificationOngoing: true,
     androidNotificationIcon: 'drawable/ic_launcher',
-    notificationColor: accent,
+    notificationColor: accents[0],
   );
+  await settings.load();
+  await userLib.load();
   player.currentIndexStream.listen((_) => saveProgress());
   player.playingStream.listen((playing) {
     if (!playing) saveProgress();
@@ -26,20 +29,92 @@ Future<void> main() async {
   runApp(const MyApp());
 }
 
+ThemeData buildTheme() {
+  final a = accents[settings.accentIndex];
+  final bgc = settings.amoled ? Colors.black : const Color(0xFF0E0E14);
+  final card = settings.amoled ? const Color(0xFF14141B) : const Color(0xFF1A1A24);
+  return ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: bgc,
+    cardColor: card,
+    colorScheme: ColorScheme.fromSeed(seedColor: a, brightness: Brightness.dark),
+  );
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: bg,
-        colorScheme: ColorScheme.fromSeed(
-            seedColor: accent, brightness: Brightness.dark),
+    return ListenableBuilder(
+      listenable: settings,
+      builder: (context, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: buildTheme(),
+        home: const SplashPage(),
       ),
-      home: const HomePage(),
+    );
+  }
+}
+
+// ---------- شاشة البداية ----------
+class SplashPage extends StatefulWidget {
+  const SplashPage({super.key});
+  @override
+  State<SplashPage> createState() => _SplashPageState();
+}
+
+class _SplashPageState extends State<SplashPage> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 500),
+        pageBuilder: (_, __, ___) => const HomePage(),
+        transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
+      ));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = context.accent;
+    return Scaffold(
+      body: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.0, end: 1.0),
+          duration: const Duration(milliseconds: 900),
+          curve: Curves.easeOutBack,
+          builder: (_, v, child) => Opacity(
+            opacity: v.clamp(0.0, 1.0).toDouble(),
+            child: Transform.scale(scale: 0.6 + 0.4 * v, child: child),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 110,
+                height: 110,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(32),
+                  gradient: LinearGradient(
+                    colors: [a, Color.lerp(a, Colors.black, 0.5)!],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  boxShadow: [BoxShadow(color: a.withAlpha(90), blurRadius: 40)],
+                ),
+                child: const Icon(Icons.music_note_rounded, size: 64, color: Colors.white),
+              ),
+              const SizedBox(height: 20),
+              const Text('musicApp',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: 1)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -52,34 +127,60 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  List<SongModel> _raw = [];
   List<SongModel> _shown = [];
   Map<String, List<SongModel>> _albums = {};
   Map<String, List<SongModel>> _artists = {};
   bool _loading = true;
   bool _granted = false;
+  int _sortKey = -1;
+  int _minKey = -1;
   final _search = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    settings.addListener(_onSettings);
     _init();
+  }
+
+  @override
+  void dispose() {
+    settings.removeListener(_onSettings);
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _onSettings() {
+    if (_raw.isNotEmpty &&
+        (_sortKey != settings.sortIndex || _minKey != settings.minSeconds)) {
+      _compute();
+      _filter(_search.text);
+    }
   }
 
   Future<void> _init() async {
     final ok = await audioQuery.checkAndRequest(retryRequest: true);
     _granted = ok;
-    await userLib.load();
     if (ok) await _loadSongs();
     if (mounted) setState(() => _loading = false);
   }
 
-  Map<String, List<SongModel>> _group(
-      List<SongModel> songs, String Function(SongModel) key) {
+  Map<String, List<SongModel>> _group(List<SongModel> songs, String Function(SongModel) key) {
     final m = <String, List<SongModel>>{};
     for (final s in songs) {
       m.putIfAbsent(key(s), () => []).add(s);
     }
     return m;
+  }
+
+  void _compute() {
+    _sortKey = settings.sortIndex;
+    _minKey = settings.minSeconds;
+    allSongs = _raw.where((s) => (s.duration ?? 0) >= settings.minSeconds * 1000).toList();
+    sortSongs(allSongs);
+    _albums = _group(allSongs, albumOf);
+    _artists = _group(allSongs, artistOf);
   }
 
   Future<void> _loadSongs() async {
@@ -89,13 +190,9 @@ class _HomePageState extends State<HomePage> {
       uriType: UriType.EXTERNAL,
       ignoreCase: true,
     );
-    allSongs = res
-        .where((s) =>
-            (s.isMusic ?? true) && (s.duration ?? 0) > 30000 && s.uri != null)
-        .toList();
-    _albums = _group(allSongs, albumOf);
-    _artists = _group(allSongs, artistOf);
-    await restoreLast(allSongs);
+    _raw = res.where((s) => (s.isMusic ?? true) && s.uri != null).toList();
+    _compute();
+    await restoreLast(_raw);
     if (mounted) _filter(_search.text);
   }
 
@@ -119,17 +216,11 @@ class _HomePageState extends State<HomePage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: cardColor,
+        backgroundColor: context.card,
         title: Text('حذف "$name"؟'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('حذف'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('حذف')),
         ],
       ),
     );
@@ -146,11 +237,8 @@ class _HomePageState extends State<HomePage> {
         cacheExtent: 600,
         padding: const EdgeInsets.only(bottom: 12),
         itemCount: _shown.length,
-        itemBuilder: (_, i) => SongTile(
-          song: _shown[i],
-          index: i,
-          onTap: () => playQueue(_shown, i),
-        ),
+        itemBuilder: (_, i) =>
+            SongTile(song: _shown[i], index: i, onTap: () => playQueue(_shown, i)),
       ),
     );
   }
@@ -207,8 +295,7 @@ class _HomePageState extends State<HomePage> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text('${songs.length} أغنية',
-              style: const TextStyle(color: Colors.white54)),
+          subtitle: Text('${songs.length} أغنية', style: const TextStyle(color: Colors.white54)),
           onTap: () => _open(SongListPage(title: name, songs: songs)),
         );
       },
@@ -233,11 +320,8 @@ class _HomePageState extends State<HomePage> {
           itemExtent: 72,
           padding: const EdgeInsets.only(bottom: 12),
           itemCount: favs.length,
-          itemBuilder: (_, i) => SongTile(
-            song: favs[i],
-            index: i,
-            onTap: () => playQueue(favs, i),
-          ),
+          itemBuilder: (_, i) =>
+              SongTile(song: favs[i], index: i, onTap: () => playQueue(favs, i)),
         );
       },
     );
@@ -247,10 +331,10 @@ class _HomePageState extends State<HomePage> {
         width: 52,
         height: 52,
         decoration: BoxDecoration(
-          color: accent.withAlpha(50),
+          color: context.accent.withAlpha(50),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(icon, color: accent),
+        child: Icon(icon, color: context.accent),
       );
 
   Widget _playlistsTab() {
@@ -279,10 +363,8 @@ class _HomePageState extends State<HomePage> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(
-                  '${userLib.playlists[name]!.length} أغنية',
-                  style: const TextStyle(color: Colors.white54),
-                ),
+                subtitle: Text('${userLib.playlists[name]!.length} أغنية',
+                    style: const TextStyle(color: Colors.white54)),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete_outline, color: Colors.white38),
                   onPressed: () => _confirmDelete(name),
@@ -329,7 +411,7 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -337,33 +419,40 @@ class _HomePageState extends State<HomePage> {
                       children: [
                         const Expanded(
                           child: Text('مكتبتي',
-                              style: TextStyle(
-                                  fontSize: 30, fontWeight: FontWeight.bold)),
+                              style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
                         ),
                         if (allSongs.isNotEmpty)
                           FilledButton.icon(
-                            onPressed: () => playQueue(allSongs,
-                                math.Random().nextInt(allSongs.length),
+                            onPressed: () => playQueue(
+                                allSongs, math.Random().nextInt(allSongs.length),
                                 shuffle: true),
                             icon: const Icon(Icons.shuffle),
                             label: const Text('عشوائي'),
                           ),
+                        IconButton(
+                          icon: const Icon(Icons.settings_outlined),
+                          tooltip: 'الإعدادات',
+                          onPressed: () => _open(const SettingsPage()),
+                        ),
                       ],
                     ),
                     Text('${allSongs.length} أغنية',
                         style: const TextStyle(color: Colors.white54)),
                     const SizedBox(height: 12),
-                    TextField(
-                      controller: _search,
-                      onChanged: _filter,
-                      decoration: InputDecoration(
-                        hintText: 'ابحث في أغانيك',
-                        prefixIcon: const Icon(Icons.search),
-                        filled: true,
-                        fillColor: cardColor,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none,
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: TextField(
+                        controller: _search,
+                        onChanged: _filter,
+                        decoration: InputDecoration(
+                          hintText: 'ابحث في أغانيك',
+                          prefixIcon: const Icon(Icons.search),
+                          filled: true,
+                          fillColor: context.card,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide.none,
+                          ),
                         ),
                       ),
                     ),
@@ -376,7 +465,7 @@ class _HomePageState extends State<HomePage> {
                 dividerColor: Colors.transparent,
                 indicatorSize: TabBarIndicatorSize.tab,
                 indicator: BoxDecoration(
-                  color: accent.withAlpha(60),
+                  color: context.accent.withAlpha(60),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 labelColor: Colors.white,
@@ -416,8 +505,7 @@ class SongListPage extends StatelessWidget {
   final String title;
   final List<SongModel>? songs;
   final String? playlist;
-  const SongListPage(
-      {super.key, required this.title, this.songs, this.playlist});
+  const SongListPage({super.key, required this.title, this.songs, this.playlist});
 
   @override
   Widget build(BuildContext context) {
@@ -436,13 +524,11 @@ class SongListPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
                 child: Row(
                   children: [
-                    Text('${list.length} أغنية',
-                        style: const TextStyle(color: Colors.white54)),
+                    Text('${list.length} أغنية', style: const TextStyle(color: Colors.white54)),
                     const Spacer(),
                     FilledButton.icon(
-                      onPressed: () => playQueue(
-                          list, math.Random().nextInt(list.length),
-                          shuffle: true),
+                      onPressed: () =>
+                          playQueue(list, math.Random().nextInt(list.length), shuffle: true),
                       icon: const Icon(Icons.shuffle),
                       label: const Text('عشوائي'),
                     ),
