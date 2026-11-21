@@ -23,8 +23,7 @@ String artistOf(SongModel s) {
   return (a == null || a == '<unknown>') ? 'فنان غير معروف' : a;
 }
 
-Future<void> playQueue(List<SongModel> songs, int index,
-    {bool? shuffle}) async {
+Future<void> playQueue(List<SongModel> songs, int index, {bool? shuffle}) async {
   queue = songs;
   if (shuffle != null) await player.setShuffleModeEnabled(shuffle);
   await player.setAudioSource(
@@ -54,17 +53,19 @@ void main() => runApp(const MyApp());
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: bg,
-          colorScheme:
-              ColorScheme.fromSeed(seedColor: accent, brightness: Brightness.dark),
-        ),
-        home: const HomePage(),
-      );
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: bg,
+        colorScheme: ColorScheme.fromSeed(
+            seedColor: accent, brightness: Brightness.dark),
+      ),
+      home: const HomePage(),
+    );
+  }
 }
 
 // ---------- الصفحة الرئيسية ----------
@@ -88,8 +89,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _init() async {
-    var ok = await audioQuery.permissionsStatus();
-    if (!ok) ok = await audioQuery.permissionsRequest();
+    final ok = await audioQuery.checkAndRequest(retryRequest: true);
     _granted = ok;
     if (ok) await _loadSongs();
     if (mounted) setState(() => _loading = false);
@@ -144,9 +144,7 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
-    if (_shown.isEmpty) {
-      return const Center(child: Text('ما لقينا أغاني'));
-    }
+    if (_shown.isEmpty) return const Center(child: Text('ما لقينا أغاني'));
     return RefreshIndicator(
       onRefresh: _loadSongs,
       child: ListView.builder(
@@ -223,21 +221,25 @@ class SongTile extends StatelessWidget {
   final SongModel song;
   final int index;
   final VoidCallback onTap;
-  const SongTile(
-      {super.key,
-      required this.song,
-      required this.index,
-      required this.onTap});
+  const SongTile({
+    super.key,
+    required this.song,
+    required this.index,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
+      tween: Tween<double>(begin: 0.0, end: 1.0),
       duration: Duration(milliseconds: 300 + math.min(index, 8) * 50),
       curve: Curves.easeOutCubic,
       builder: (context, v, child) => Opacity(
         opacity: v,
-        child: Transform.translate(offset: Offset(0, 24 * (1 - v)), child: child),
+        child: Transform.translate(
+          offset: Offset(0, 24 * (1 - v)),
+          child: child,
+        ),
       ),
       child: StreamBuilder<int?>(
         stream: player.currentIndexStream,
@@ -250,12 +252,15 @@ class SongTile extends StatelessWidget {
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
             leading: Art(id: song.id, size: 52, radius: 12),
-            title: Text(song.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: current ? accent : null)),
+            title: Text(
+              song.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: current ? accent : null,
+              ),
+            ),
             subtitle: Text(
               '${artistOf(song)} • ${fmt(Duration(milliseconds: song.duration ?? 0))}',
               maxLines: 1,
@@ -293,7 +298,6 @@ class Art extends StatelessWidget {
       artworkWidth: size,
       artworkHeight: size,
       artworkBorder: r,
-      artworkFit: BoxFit.cover,
       nullArtworkWidget: Container(
         width: size,
         height: size,
@@ -322,8 +326,9 @@ class EqBars extends StatefulWidget {
 
 class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
   late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 900))
-    ..repeat();
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
 
   @override
   void dispose() {
@@ -349,7 +354,9 @@ class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
               height: h,
               margin: const EdgeInsets.symmetric(horizontal: 1.5),
               decoration: BoxDecoration(
-                  color: accent, borderRadius: BorderRadius.circular(2)),
+                color: accent,
+                borderRadius: BorderRadius.circular(2),
+              ),
             );
           }),
         ),
@@ -358,7 +365,7 @@ class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
   }
 }
 
-// ---------- زر التشغيل/الإيقاف ----------
+// ---------- زر التشغيل / الإيقاف ----------
 class PlayPauseButton extends StatelessWidget {
   final double size;
   const PlayPauseButton({super.key, required this.size});
@@ -420,11 +427,10 @@ class MiniPlayer extends StatelessWidget {
       stream: player.currentIndexStream,
       builder: (context, snap) {
         final i = snap.data;
-        final has = i != null && i < queue.length;
         return AnimatedSize(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
-          child: has
+          child: (i != null && i < queue.length)
               ? _bar(context, queue[i])
               : const SizedBox(width: double.infinity),
         );
@@ -438,7 +444,9 @@ class MiniPlayer extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
         decoration: BoxDecoration(
-            color: cardColor, borderRadius: BorderRadius.circular(20)),
+          color: cardColor,
+          borderRadius: BorderRadius.circular(20),
+        ),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
@@ -451,29 +459,36 @@ class MiniPlayer extends StatelessWidget {
                   padding: const EdgeInsets.all(10),
                   child: Row(
                     children: [
-                      Hero(tag: 'art', child: Art(id: song.id, size: 48, radius: 12)),
+                      Hero(
+                        tag: 'art',
+                        child: Art(id: song.id, size: 48, radius: 12),
+                      ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(song.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600)),
-                            Text(artistOf(song),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    color: Colors.white54, fontSize: 12)),
+                            Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            Text(
+                              artistOf(song),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white54, fontSize: 12),
+                            ),
                           ],
                         ),
                       ),
                       const PlayPauseButton(size: 36),
                       IconButton(
                         icon: const Icon(Icons.skip_next_rounded),
-                        onPressed: player.seekToNext,
+                        onPressed: () => player.seekToNext(),
                       ),
                     ],
                   ),
@@ -569,33 +584,128 @@ class NowPlayingPage extends StatelessWidget {
                             ],
                           ),
                           child: Hero(
-                              tag: 'art',
-                              child: Art(id: song.id, size: w, radius: 28)),
+                            tag: 'art',
+                            child: Art(id: song.id, size: w, radius: 28),
+                          ),
                         ),
                       ),
                     ),
                     const SizedBox(height: 32),
-                    Text(song.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            fontSize: 22, fontWeight: FontWeight.bold)),
+                    Text(
+                      song.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.bold),
+                    ),
                     const SizedBox(height: 4),
-                    Text(artistOf(song),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white60)),
-                    const Spacer(),
+                    Text(
+                      artistOf(song),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white60),
+                    ),
+                      const Spacer(),
                     StreamBuilder<Duration>(
                       stream: player.positionStream,
                       builder: (_, s) {
                         final pos = s.data ?? Duration.zero;
                         final dur = player.duration ?? Duration.zero;
-                        final max =
+                        final maxMs =
                             dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
+                        final curMs =
+                            pos.inMilliseconds.clamp(0, maxMs).toDouble();
                         return Column(
                           children: [
                             Slider(
-                              value: pos.inMilliseconds.clamp(0, max).toDouble(),
-      
+                              value: curMs,
+                              max: maxMs.toDouble(),
+                              onChanged: (v) => player
+                                  .seek(Duration(milliseconds: v.toInt())),
+                            ),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 16),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(fmt(pos),
+                                      style: const TextStyle(
+                                          color: Colors.white54)),
+                                  Text(fmt(dur),
+                                      style: const TextStyle(
+                                          color: Colors.white54)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        StreamBuilder<bool>(
+                          stream: player.shuffleModeEnabledStream,
+                          builder: (_, s) {
+                            final on = s.data ?? false;
+                            return IconButton(
+                              icon: Icon(Icons.shuffle,
+                                  color: on ? accent : Colors.white54),
+                              onPressed: () =>
+                                  player.setShuffleModeEnabled(!on),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          iconSize: 40,
+                          icon: const Icon(Icons.skip_previous_rounded),
+                          onPressed: () => player.seekToPrevious(),
+                        ),
+                        const PlayPauseButton(size: 72),
+                        IconButton(
+                          iconSize: 40,
+                          icon: const Icon(Icons.skip_next_rounded),
+                          onPressed: () => player.seekToNext(),
+                        ),
+                        StreamBuilder<LoopMode>(
+                          stream: player.loopModeStream,
+                          builder: (_, s) {
+                            final m = s.data ?? LoopMode.off;
+                            return IconButton(
+                              icon: Icon(
+                                m == LoopMode.one
+                                    ? Icons.repeat_one
+                                    : Icons.repeat,
+                                color: m == LoopMode.off
+                                    ? Colors.white54
+                                    : accent,
+                              ),
+                              onPressed: () => player.setLoopMode(
+                                m == LoopMode.off
+                                    ? LoopMode.all
+                                    : m == LoopMode.all
+                                        ? LoopMode.one
+                                        : LoopMode.off,
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ===== END =====
