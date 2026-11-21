@@ -1,108 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:on_audio_query_forked/on_audio_query.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-final player = AudioPlayer();
-final audioQuery = OnAudioQuery();
-List<SongModel> queue = [];
-
-const bg = Color(0xFF0E0E14);
-const cardColor = Color(0xFF1A1A24);
-const accent = Color(0xFF8B5CF6);
-
-String fmt(Duration d) {
-  final h = d.inHours;
-  final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-  final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-  return h > 0 ? '$h:$m:$s' : '${d.inMinutes}:$s';
-}
-
-String artistOf(SongModel s) {
-  final a = s.artist;
-  return (a == null || a == '<unknown>') ? 'فنان غير معروف' : a;
-}
-
-AudioSource _source(SongModel s) {
-  final aid = s.albumId;
-  return AudioSource.uri(
-    Uri.parse(s.uri!),
-    tag: MediaItem(
-      id: s.id.toString(),
-      title: s.title,
-      artist: artistOf(s),
-      duration: Duration(milliseconds: s.duration ?? 0),
-      artUri: aid == null
-          ? null
-          : Uri.parse('content://media/external/audio/albumart/$aid'),
-    ),
-  );
-}
-
-ConcatenatingAudioSource _concat(List<SongModel> songs) =>
-    ConcatenatingAudioSource(children: songs.map(_source).toList());
-
-Future<void> playQueue(List<SongModel> songs, int index,
-    {bool? shuffle}) async {
-  queue = songs;
-  if (shuffle != null) await player.setShuffleModeEnabled(shuffle);
-  await player.setAudioSource(_concat(songs), initialIndex: index);
-  player.play();
-  saveQueue();
-}
-
-// ---------- حفظ واسترجاع آخر تشغيل ----------
-Future<void> saveQueue() async {
-  final p = await SharedPreferences.getInstance();
-  await p.setStringList(
-      'queue_ids', queue.map((s) => s.id.toString()).toList());
-}
-
-Future<void> saveProgress() async {
-  if (queue.isEmpty) return;
-  final p = await SharedPreferences.getInstance();
-  await p.setInt('last_index', player.currentIndex ?? 0);
-  await p.setInt('last_pos', player.position.inMilliseconds);
-}
-
-Future<void> restoreLast(List<SongModel> all) async {
-  if (queue.isNotEmpty) return;
-  try {
-    final p = await SharedPreferences.getInstance();
-    final ids = p.getStringList('queue_ids');
-    if (ids == null || ids.isEmpty) return;
-    final byId = {for (final s in all) s.id.toString(): s};
-    final songs = [
-      for (final id in ids)
-        if (byId[id] != null) byId[id]!
-    ];
-    if (songs.isEmpty) return;
-    var index = p.getInt('last_index') ?? 0;
-    if (index >= songs.length) index = 0;
-    queue = songs;
-    await player.setAudioSource(
-      _concat(songs),
-      initialIndex: index,
-      initialPosition: Duration(milliseconds: p.getInt('last_pos') ?? 0),
-    );
-  } catch (_) {}
-}
-
-void openPlayer(BuildContext context) {
-  Navigator.of(context).push(PageRouteBuilder(
-    transitionDuration: const Duration(milliseconds: 400),
-    pageBuilder: (_, __, ___) => const NowPlayingPage(),
-    transitionsBuilder: (_, a, __, child) => SlideTransition(
-      position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
-          .chain(CurveTween(curve: Curves.easeOutCubic))
-          .animate(a),
-      child: child,
-    ),
-  ));
-}
+import 'core.dart';
+import 'widgets.dart';
+import 'player_ui.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -110,6 +13,8 @@ Future<void> main() async {
     androidNotificationChannelId: 'com.you.musiicc.channel.audio',
     androidNotificationChannelName: 'تشغيل الموسيقى',
     androidNotificationOngoing: true,
+    androidNotificationIcon: 'drawable/ic_launcher',
+    notificationColor: accent,
   );
   player.currentIndexStream.listen((_) => saveProgress());
   player.playingStream.listen((playing) {
@@ -147,8 +52,9 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<SongModel> _all = [];
   List<SongModel> _shown = [];
+  Map<String, List<SongModel>> _albums = {};
+  Map<String, List<SongModel>> _artists = {};
   bool _loading = true;
   bool _granted = false;
   final _search = TextEditingController();
@@ -162,8 +68,18 @@ class _HomePageState extends State<HomePage> {
   Future<void> _init() async {
     final ok = await audioQuery.checkAndRequest(retryRequest: true);
     _granted = ok;
+    await userLib.load();
     if (ok) await _loadSongs();
     if (mounted) setState(() => _loading = false);
+  }
+
+  Map<String, List<SongModel>> _group(
+      List<SongModel> songs, String Function(SongModel) key) {
+    final m = <String, List<SongModel>>{};
+    for (final s in songs) {
+      m.putIfAbsent(key(s), () => []).add(s);
+    }
+    return m;
   }
 
   Future<void> _loadSongs() async {
@@ -173,11 +89,13 @@ class _HomePageState extends State<HomePage> {
       uriType: UriType.EXTERNAL,
       ignoreCase: true,
     );
-    _all = res
+    allSongs = res
         .where((s) =>
             (s.isMusic ?? true) && (s.duration ?? 0) > 30000 && s.uri != null)
         .toList();
-    await restoreLast(_all);
+    _albums = _group(allSongs, albumOf);
+    _artists = _group(allSongs, artistOf);
+    await restoreLast(allSongs);
     if (mounted) _filter(_search.text);
   }
 
@@ -185,8 +103,8 @@ class _HomePageState extends State<HomePage> {
     final t = q.trim().toLowerCase();
     setState(() {
       _shown = t.isEmpty
-          ? _all
-          : _all
+          ? allSongs
+          : allSongs
               .where((s) =>
                   s.title.toLowerCase().contains(t) ||
                   (s.artist ?? '').toLowerCase().contains(t))
@@ -194,32 +112,38 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Widget _body() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (!_granted) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.lock_outline, size: 56, color: Colors.white38),
-            const SizedBox(height: 12),
-            const Text('نحتاج إذن الوصول لأغاني الجهاز'),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: () {
-                setState(() => _loading = true);
-                _init();
-              },
-              child: const Text('السماح'),
-            ),
-          ],
-        ),
-      );
-    }
+  void _open(Widget page) =>
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+
+  Future<void> _confirmDelete(String name) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: cardColor,
+        title: Text('حذف "$name"؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) userLib.deletePlaylist(name);
+  }
+
+  // ----- التبويبات -----
+  Widget _songsTab() {
     if (_shown.isEmpty) return const Center(child: Text('ما لقينا أغاني'));
     return RefreshIndicator(
       onRefresh: _loadSongs,
       child: ListView.builder(
+        itemExtent: 72,
+        cacheExtent: 600,
         padding: const EdgeInsets.only(bottom: 12),
         itemCount: _shown.length,
         itemBuilder: (_, i) => SongTile(
@@ -231,553 +155,318 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _albumsTab() {
+    final keys = _albums.keys.toList()..sort();
+    final w = (MediaQuery.of(context).size.width - 44) / 2;
+    return GridView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 16,
+        childAspectRatio: w / (w + 56),
+      ),
+      itemCount: keys.length,
+      itemBuilder: (_, i) {
+        final name = keys[i];
+        final songs = _albums[name]!;
+        return InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _open(SongListPage(title: name, songs: songs)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Art(id: songs.first.id, size: w, radius: 16),
+              const SizedBox(height: 8),
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text('${songs.length} أغنية',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _artistsTab() {
+    final keys = _artists.keys.toList()..sort();
+    return ListView.builder(
+      itemExtent: 72,
+      padding: const EdgeInsets.only(bottom: 12),
+      itemCount: keys.length,
+      itemBuilder: (_, i) {
+        final name = keys[i];
+        final songs = _artists[name]!;
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+          leading: Art(id: songs.first.id, size: 52, radius: 26),
+          title: Text(name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+          subtitle: Text('${songs.length} أغنية',
+              style: const TextStyle(color: Colors.white54)),
+          onTap: () => _open(SongListPage(title: name, songs: songs)),
+        );
+      },
+    );
+  }
+
+  Widget _favoritesTab() {
+    return ListenableBuilder(
+      listenable: userLib,
+      builder: (_, __) {
+        final favs = allSongs.where((s) => userLib.isFav(s.id)).toList();
+        if (favs.isEmpty) {
+          return const Center(
+            child: Text(
+              'ما عندك أغاني مفضلة بعد\nاضغط ⋮ على أي أغنية وأضفها',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54),
+            ),
+          );
+        }
+        return ListView.builder(
+          itemExtent: 72,
+          padding: const EdgeInsets.only(bottom: 12),
+          itemCount: favs.length,
+          itemBuilder: (_, i) => SongTile(
+            song: favs[i],
+            index: i,
+            onTap: () => playQueue(favs, i),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _iconBox(IconData icon) => Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: accent.withAlpha(50),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(icon, color: accent),
+      );
+
+  Widget _playlistsTab() {
+    return ListenableBuilder(
+      listenable: userLib,
+      builder: (_, __) {
+        final names = userLib.playlists.keys.toList();
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 12),
+          children: [
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+              leading: _iconBox(Icons.add),
+              title: const Text('قائمة تشغيل جديدة',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              onTap: () async {
+                final n = await askName(context, 'قائمة جديدة');
+                if (n != null && n.isNotEmpty) userLib.createPlaylist(n);
+              },
+            ),
+            for (final name in names)
+              ListTile(
+                contentPadding: const EdgeInsets.only(left: 20, right: 4),
+                leading: _iconBox(Icons.queue_music),
+                title: Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                  '${userLib.playlists[name]!.length} أغنية',
+                  style: const TextStyle(color: Colors.white54),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.white38),
+                  onPressed: () => _confirmDelete(name),
+                ),
+                onTap: () => _open(SongListPage(title: name, playlist: name)),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _permissionView() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.lock_outline, size: 56, color: Colors.white38),
+          const SizedBox(height: 12),
+          const Text('نحتاج إذن الوصول لأغاني الجهاز'),
+          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: () {
+              setState(() => _loading = true);
+              _init();
+            },
+            child: const Text('السماح'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (!_granted) return Scaffold(body: _permissionView());
+    return DefaultTabController(
+      length: 5,
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text('مكتبتي',
+                              style: TextStyle(
+                                  fontSize: 30, fontWeight: FontWeight.bold)),
+                        ),
+                        if (allSongs.isNotEmpty)
+                          FilledButton.icon(
+                            onPressed: () => playQueue(allSongs,
+                                math.Random().nextInt(allSongs.length),
+                                shuffle: true),
+                            icon: const Icon(Icons.shuffle),
+                            label: const Text('عشوائي'),
+                          ),
+                      ],
+                    ),
+                    Text('${allSongs.length} أغنية',
+                        style: const TextStyle(color: Colors.white54)),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _search,
+                      onChanged: _filter,
+                      decoration: InputDecoration(
+                        hintText: 'ابحث في أغانيك',
+                        prefixIcon: const Icon(Icons.search),
+                        filled: true,
+                        fillColor: cardColor,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              TabBar(
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                dividerColor: Colors.transparent,
+                indicatorSize: TabBarIndicatorSize.tab,
+                indicator: BoxDecoration(
+                  color: accent.withAlpha(60),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white54,
+                labelStyle: const TextStyle(fontWeight: FontWeight.w600),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                tabs: const [
+                  Tab(text: 'الأغاني'),
+                  Tab(text: 'الألبومات'),
+                  Tab(text: 'الفنانين'),
+                  Tab(text: 'المفضلة'),
+                  Tab(text: 'القوائم'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _songsTab(),
+                    _albumsTab(),
+                    _artistsTab(),
+                    _favoritesTab(),
+                    _playlistsTab(),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        bottomNavigationBar: const MiniPlayer(),
+      ),
+    );
+  }
+}
+
+// ---------- صفحة قائمة أغاني (ألبوم / فنان / قائمة تشغيل) ----------
+class SongListPage extends StatelessWidget {
+  final String title;
+  final List<SongModel>? songs;
+  final String? playlist;
+  const SongListPage(
+      {super.key, required this.title, this.songs, this.playlist});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text('مكتبتي',
-                            style: TextStyle(
-                                fontSize: 30, fontWeight: FontWeight.bold)),
-                      ),
-                      if (_all.isNotEmpty)
-                        FilledButton.icon(
-                          onPressed: () => playQueue(
-                              _all, math.Random().nextInt(_all.length),
-                              shuffle: true),
-                          icon: const Icon(Icons.shuffle),
-                          label: const Text('عشوائي'),
-                        ),
-                    ],
-                  ),
-                  Text('${_all.length} أغنية',
-                      style: const TextStyle(color: Colors.white54)),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _search,
-                    onChanged: _filter,
-                    decoration: InputDecoration(
-                      hintText: 'ابحث في أغانيك',
-                      prefixIcon: const Icon(Icons.search),
-                      filled: true,
-                      fillColor: cardColor,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        borderSide: BorderSide.none,
-                      ),
+      appBar: AppBar(title: Text(title), backgroundColor: Colors.transparent),
+      body: ListenableBuilder(
+        listenable: userLib,
+        builder: (_, __) {
+          final list = playlist != null
+              ? songsByIds(userLib.playlists[playlist] ?? <int>[])
+              : (songs ?? <SongModel>[]);
+          if (list.isEmpty) return const Center(child: Text('القائمة فاضية'));
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                child: Row(
+                  children: [
+                    Text('${list.length} أغنية',
+                        style: const TextStyle(color: Colors.white54)),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: () => playQueue(
+                          list, math.Random().nextInt(list.length),
+                          shuffle: true),
+                      icon: const Icon(Icons.shuffle),
+                      label: const Text('عشوائي'),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            Expanded(child: _body()),
-          ],
-        ),
+              Expanded(
+                child: ListView.builder(
+                  itemExtent: 72,
+                  itemCount: list.length,
+                  itemBuilder: (_, i) => SongTile(
+                    song: list[i],
+                    index: i,
+                    onTap: () => playQueue(list, i),
+                    playlist: playlist,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
       bottomNavigationBar: const MiniPlayer(),
     );
   }
 }
-
-// ---------- عنصر الأغنية ----------
-class SongTile extends StatelessWidget {
-  final SongModel song;
-  final int index;
-  final VoidCallback onTap;
-  const SongTile({
-    super.key,
-    required this.song,
-    required this.index,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.0, end: 1.0),
-      duration: Duration(milliseconds: 300 + math.min(index, 8) * 50),
-      curve: Curves.easeOutCubic,
-      builder: (context, v, child) => Opacity(
-        opacity: v,
-        child: Transform.translate(
-          offset: Offset(0, 24 * (1 - v)),
-          child: child,
-        ),
-      ),
-      child: StreamBuilder<int?>(
-        stream: player.currentIndexStream,
-        builder: (context, snap) {
-          final i = snap.data;
-          final current =
-              i != null && i < queue.length && queue[i].id == song.id;
-          return ListTile(
-            onTap: onTap,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
-            leading: Art(id: song.id, size: 52, radius: 12),
-            title: Text(
-              song.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: current ? accent : null,
-              ),
-            ),
-            subtitle: Text(
-              '${artistOf(song)} • ${fmt(Duration(milliseconds: song.duration ?? 0))}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white54),
-            ),
-            trailing: current
-                ? StreamBuilder<bool>(
-                    stream: player.playingStream,
-                    builder: (_, s) => EqBars(playing: s.data ?? false),
-                  )
-                : null,
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ---------- غلاف الأغنية ----------
-class Art extends StatelessWidget {
-  final int id;
-  final double size;
-  final double radius;
-  const Art({super.key, required this.id, required this.size, this.radius = 12});
-
-  @override
-  Widget build(BuildContext context) {
-    final r = BorderRadius.circular(radius);
-    return QueryArtworkWidget(
-      id: id,
-      type: ArtworkType.AUDIO,
-      size: size > 100 ? 800 : 200,
-      quality: 90,
-      artworkWidth: size,
-      artworkHeight: size,
-      artworkBorder: r,
-      nullArtworkWidget: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          borderRadius: r,
-          gradient: const LinearGradient(
-            colors: [Color(0xFF8B5CF6), Color(0xFF3B2A7A)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: Icon(Icons.music_note_rounded,
-            color: Colors.white70, size: size * 0.45),
-      ),
-    );
-  }
-}
-
-// ---------- موجات صوتية متحركة ----------
-class EqBars extends StatefulWidget {
-  final bool playing;
-  const EqBars({super.key, required this.playing});
-  @override
-  State<EqBars> createState() => _EqBarsState();
-}
-
-class _EqBarsState extends State<EqBars> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 22,
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (_, __) => Row(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: List.generate(3, (i) {
-            final h = widget.playing
-                ? 6 + 16 * (0.5 + 0.5 * math.sin(_c.value * 2 * math.pi + i * 1.4))
-                : 6.0;
-            return Container(
-              width: 4,
-              height: h,
-              margin: const EdgeInsets.symmetric(horizontal: 1.5),
-              decoration: BoxDecoration(
-                color: accent,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            );
-          }),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------- زر التشغيل / الإيقاف ----------
-class PlayPauseButton extends StatelessWidget {
-  final double size;
-  const PlayPauseButton({super.key, required this.size});
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<PlayerState>(
-      stream: player.playerStateStream,
-      builder: (_, snap) {
-        final st = snap.data;
-        final playing = st?.playing ?? false;
-        final proc = st?.processingState;
-        if (proc == ProcessingState.loading ||
-            proc == ProcessingState.buffering) {
-          return SizedBox(
-            width: size,
-            height: size,
-            child: Padding(
-              padding: EdgeInsets.all(size * 0.25),
-              child: const CircularProgressIndicator(strokeWidth: 3),
-            ),
-          );
-        }
-        return IconButton(
-          iconSize: size,
-          padding: EdgeInsets.zero,
-          onPressed: () {
-            if (proc == ProcessingState.completed) {
-              player.seek(Duration.zero, index: 0);
-              player.play();
-            } else if (playing) {
-              player.pause();
-            } else {
-              player.play();
-            }
-          },
-          icon: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
-            child: Icon(
-              playing ? Icons.pause_circle_filled : Icons.play_circle_filled,
-              key: ValueKey(playing),
-              size: size,
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-// ---------- المشغّل المصغّر ----------
-class MiniPlayer extends StatelessWidget {
-  const MiniPlayer({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<int?>(
-      stream: player.currentIndexStream,
-      builder: (context, snap) {
-        final i = snap.data;
-        return AnimatedSize(
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-          child: (i != null && i < queue.length)
-              ? _bar(context, queue[i])
-              : const SizedBox(width: double.infinity),
-        );
-      },
-    );
-  }
-
-  Widget _bar(BuildContext context, SongModel song) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-        decoration: BoxDecoration(
-          color: cardColor,
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            borderRadius: BorderRadius.circular(20),
-            onTap: () => openPlayer(context),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Row(
-                    children: [
-                      Hero(
-                        tag: 'art',
-                        child: Art(id: song.id, size: 48, radius: 12),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              song.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                            Text(
-                              artistOf(song),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: Colors.white54, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const PlayPauseButton(size: 36),
-                      IconButton(
-                        icon: const Icon(Icons.skip_next_rounded),
-                        onPressed: () => player.seekToNext(),
-                      ),
-                    ],
-                  ),
-                ),
-                StreamBuilder<Duration>(
-                  stream: player.positionStream,
-                  builder: (_, s) {
-                    final pos = s.data ?? Duration.zero;
-                    final dur = player.duration ?? Duration.zero;
-                    final v = dur.inMilliseconds == 0
-                        ? 0.0
-                        : (pos.inMilliseconds / dur.inMilliseconds)
-                            .clamp(0.0, 1.0)
-                            .toDouble();
-                    return ClipRRect(
-                      borderRadius: const BorderRadius.vertical(
-                          bottom: Radius.circular(20)),
-                      child: LinearProgressIndicator(
-                        value: v,
-                        minHeight: 3,
-                        backgroundColor: Colors.white10,
-                        color: accent,
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------- شاشة التشغيل الكاملة ----------
-class NowPlayingPage extends StatelessWidget {
-  const NowPlayingPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final w = MediaQuery.of(context).size.width - 64;
-    return Scaffold(
-      body: StreamBuilder<int?>(
-        stream: player.currentIndexStream,
-        builder: (context, snap) {
-          final i = snap.data;
-          if (i == null || i >= queue.length) return const SizedBox();
-          final song = queue[i];
-          return Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF3B2A7A), bg, bg],
-              ),
-            ),
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                              size: 32),
-                          onPressed: () => Navigator.of(context).pop(),
-                        ),
-                        const Spacer(),
-                        const Text('يتم التشغيل الآن',
-                            style: TextStyle(color: Colors.white70)),
-    const Spacer(),
-                        const SizedBox(width: 48),
-                      ],
-                    ),
-                    const Spacer(),
-                    StreamBuilder<bool>(
-                      stream: player.playingStream,
-                      builder: (_, s) => AnimatedScale(
-                        scale: (s.data ?? false) ? 1.0 : 0.85,
-                        duration: const Duration(milliseconds: 400),
-                        curve: Curves.easeOutBack,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(28),
-                            boxShadow: [
-                              BoxShadow(
-                                color: accent.withAlpha(90),
-                                blurRadius: 40,
-                                offset: const Offset(0, 20),
-                              ),
-                            ],
-                          ),
-                          child: Hero(
-                            tag: 'art',
-                            child: Art(id: song.id, size: w, radius: 28),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          fontSize: 22, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      artistOf(song),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white60),
-                    ),
-                    const Spacer(),
-                    StreamBuilder<Duration>(
-                      stream: player.positionStream,
-                      builder: (_, s) {
-                        final pos = s.data ?? Duration.zero;
-                        final dur = player.duration ?? Duration.zero;
-                        final maxMs =
-                            dur.inMilliseconds > 0 ? dur.inMilliseconds : 1;
-                        final curMs =
-                            pos.inMilliseconds.clamp(0, maxMs).toDouble();
-                        return Column(
-                          children: [
-                            Slider(
-                              value: curMs,
-                              max: maxMs.toDouble(),
-                              onChanged: (v) => player
-                                  .seek(Duration(milliseconds: v.toInt())),
-                            ),
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 16),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(fmt(pos),
-                                      style: const TextStyle(
-                                          color: Colors.white54)),
-                                  Text(fmt(dur),
-                                      style: const TextStyle(
-                                          color: Colors.white54)),
-                                ],
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        StreamBuilder<bool>(
-                          stream: player.shuffleModeEnabledStream,
-                          builder: (_, s) {
-                            final on = s.data ?? false;
-                            return IconButton(
-                              icon: Icon(Icons.shuffle,
-                                  color: on ? accent : Colors.white54),
-                              onPressed: () =>
-                                  player.setShuffleModeEnabled(!on),
-                            );
-                          },
-                        ),
-                        IconButton(
-                          iconSize: 40,
-                          icon: const Icon(Icons.skip_previous_rounded),
-                          onPressed: () => player.seekToPrevious(),
-                        ),
-                        const PlayPauseButton(size: 72),
-                        IconButton(
-                          iconSize: 40,
-                          icon: const Icon(Icons.skip_next_rounded),
-                          onPressed: () => player.seekToNext(),
-                        ),
-                        StreamBuilder<LoopMode>(
-                          stream: player.loopModeStream,
-                          builder: (_, s) {
-                            final m = s.data ?? LoopMode.off;
-                            return IconButton(
-                              icon: Icon(
-                                m == LoopMode.one
-                                    ? Icons.repeat_one
-                                    : Icons.repeat,
-                                color: m == LoopMode.off
-                                    ? Colors.white54
-                                    : accent,
-                              ),
-                              onPressed: () => player.setLoopMode(
-                                m == LoopMode.off
-                                    ? LoopMode.all
-                                    : m == LoopMode.all
-                                        ? LoopMode.one
-                                        : LoopMode.off,
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ===== END =====
+// ===== END main =====
